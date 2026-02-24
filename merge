@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # ==============================================================================
 # FFmpeg Recursive Merger V4 (Subtitle Fix + Natural Sort)
