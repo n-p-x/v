@@ -11,7 +11,7 @@ START_TIME=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Default configuration
-BASEDIR="${BASEDIR:-/content/drive/MyDrive}"
+BASEDIR="${BASEDIR:-$(pwd)}"
 IDIR="${BASEDIR}/input"
 ODIR="${BASEDIR}/output" 
 EDIR="${BASEDIR}/error"
