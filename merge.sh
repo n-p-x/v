@@ -1,0 +1,124 @@
+#!/bin/bash
+
+# ==============================================================================
+# FFmpeg Recursive Merger V4 (Subtitle Fix + Natural Sort)
+# ==============================================================================
+# - Uses 'sort -V' for natural ordering (5 before 50).
+# - Converts incompatible subtitles to SRT (-c:s srt) to prevent codec errors.
+# - Copies Video and Audio (-c:v copy -c:a copy) without re-encoding.
+# ==============================================================================
+
+# Colors
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+# Check arguments
+if [ "$#" -lt 2 ]; then
+    echo -e "${YELLOW}Usage: $0 <input_directory> <output_filename.mkv>${NC}"
+    exit 1
+fi
+
+INPUT_DIR="$1"
+OUTPUT_FILE="$2"
+
+# File Paths
+BASENAME_OUT=$(basename "$OUTPUT_FILE")
+FILENAME_NO_EXT="${BASENAME_OUT%.*}"
+YOUTUBE_TXT="${FILENAME_NO_EXT}.txt"      
+FFMETA_FILE="ffmetadata.ini"              
+FILE_LIST="files_to_merge.txt"            
+
+# Check Dependencies
+if ! command -v ffmpeg &> /dev/null; then echo -e "${RED}Error: ffmpeg is not installed.${NC}"; exit 1; fi
+if ! command -v ffprobe &> /dev/null; then echo -e "${RED}Error: ffprobe is not installed.${NC}"; exit 1; fi
+if ! command -v bc &> /dev/null; then echo -e "${RED}Error: bc is not installed.${NC}"; exit 1; fi
+
+# Helper for HH:MM:SS format
+format_time() {
+    local T=$1
+    local H=$((T/3600))
+    local M=$(( (T%3600)/60 ))
+    local S=$((T%60))
+    printf "%02d:%02d:%02d" $H $M $S
+}
+
+echo -e "${GREEN}Scanning '$INPUT_DIR' for files...${NC}"
+
+# Initialize Files
+echo ";FFMETADATA1" > "$FFMETA_FILE"
+> "$YOUTUBE_TXT"
+> "$FILE_LIST"
+
+CURRENT_MS=0    # Milliseconds (for MKV Metadata)
+CURRENT_SEC=0   # Seconds (for YouTube Text)
+
+# --- 1. FIND AND SORT ---
+# 'sort -V' handles "5.mp4" before "50.mp4" correctly.
+find "$INPUT_DIR" -type f \( -name "*.mp4" -o -name "*.mkv" -o -name "*.mov" \) | sort -V > temp_scan_list.txt
+
+COUNT=$(wc -l < temp_scan_list.txt)
+if [ "$COUNT" -eq 0 ]; then
+    echo -e "${RED}No video files found.${NC}"; rm temp_scan_list.txt; exit 1
+fi
+
+echo -e "${GREEN}Found $COUNT files (Naturally Sorted). Generating metadata...${NC}"
+
+# --- 2. GENERATE METADATA ---
+while read -r FILE_PATH; do
+    # Get Duration
+    DUR_SEC=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$FILE_PATH")
+    
+    # Convert to Milliseconds (Float to Int via bc)
+    DUR_MS=$(echo "$DUR_SEC * 1000" | bc | cut -d'.' -f1)
+    
+    # Calculate End Time
+    END_MS=$(echo "$CURRENT_MS + $DUR_MS" | bc)
+    
+    # Clean Title
+    BASE=$(basename "$FILE_PATH")
+    TITLE="${BASE%.*}"
+    
+    # Write MKV Metadata (INI format)
+    {
+        echo "[CHAPTER]"
+        echo "TIMEBASE=1/1000"
+        echo "START=$CURRENT_MS"
+        echo "END=$END_MS"
+        echo "title=$TITLE"
+    } >> "$FFMETA_FILE"
+    
+    # Write YouTube Text
+    START_SEC=$(echo "$CURRENT_MS / 1000" | bc)
+    TIMESTAMP=$(format_time "$START_SEC")
+    echo "$TIMESTAMP $TITLE" >> "$YOUTUBE_TXT"
+    
+    # Add to Concat List
+    SAFE_PATH=$(echo "$FILE_PATH" | sed "s/'/'\\\\''/g")
+    echo "file '$SAFE_PATH'" >> "$FILE_LIST"
+    
+    # Update Current Time
+    CURRENT_MS=$END_MS
+    
+done < temp_scan_list.txt
+rm temp_scan_list.txt
+
+echo -e "${GREEN}Merging and embedding chapters...${NC}"
+
+# --- 3. EXECUTE MERGE ---
+# -c:v copy   : Copy Video (No Re-encode)
+# -c:a copy   : Copy Audio (No Re-encode)
+# -c:s srt    : Convert Subtitles to SRT (Fixes Codec 94213 error)
+
+ffmpeg -y -f concat -safe 0 -i "$FILE_LIST" -i "$FFMETA_FILE" \
+-map_metadata 1 -fflags +genpts -avoid_negative_ts make_zero \
+-c:v copy -c:a copy -c:s srt \
+"$OUTPUT_FILE"
+
+# Cleanup
+rm "$FILE_LIST" "$FFMETA_FILE"
+
+echo -e "${GREEN}Done!${NC}"
+echo -e "1. Video: ${YELLOW}$OUTPUT_FILE${NC}"
+echo -e "2. Text:  ${YELLOW}$YOUTUBE_TXT${NC}"
