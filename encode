@@ -1,0 +1,583 @@
+#!/usr/bin/env bash
+
+# Video Encoding Script - Bash conversion of Python encode.py
+# Author: Converted from Python script
+# Date: $(date)
+
+set -euo pipefail
+
+# Initialize variables
+START_TIME=$(date +%s)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Default configuration
+BASEDIR="${BASEDIR:-/content/drive/MyDrive}"
+IDIR="${BASEDIR}/input"
+ODIR="${BASEDIR}/output" 
+EDIR="${BASEDIR}/error"
+DDIR="${BASEDIR}/trash"
+
+# Options
+LIST_DIR="sizedir"
+DELETE_MODE="hard"
+DEFAULT_PROFILE="720"
+START_INDEX=0
+
+# File formats
+VIDEO_FORMATS=(".mkv" ".m4v" ".mp4" ".ts" ".mov" ".flv" ".wmv" ".avi" ".webm" ".MKV" ".M4V" ".MP4" ".TS" ".MOV" ".FLV" ".WMV" ".AVI" ".WEBM")
+SUBTITLE_FORMATS=(".srt" ".vtt" ".SRT" ".VTT")
+
+# Global arrays
+EXCLUDED_DIRS=()
+PROCESSED_DIRS=()
+
+# Parse command line arguments
+parse_args() {
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -p|--profile)
+                PROFILE="$2"
+                shift 2
+                ;;
+            -s|--start)
+                START_INDEX="$2"
+                shift 2
+                ;;
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            *)
+                if [[ -z "${INPUT_PATH:-}" ]]; then
+                    INPUT_PATH="$1"
+                else
+                    echo "Error: Unknown option $1"
+                    exit 1
+                fi
+                shift
+                ;;
+        esac
+    done
+    
+    INPUT_PATH="${INPUT_PATH:-$IDIR}"
+    PROFILE="${PROFILE:-$DEFAULT_PROFILE}"
+}
+
+show_help() {
+    cat << EOF
+Video Encoding Script
+
+Usage: $0 [INPUT_PATH] [OPTIONS]
+
+Arguments:
+    INPUT_PATH          Input directory path (default: \$BASEDIR/input)
+
+Options:
+    -p, --profile       Encoding profile (default: 720)
+                        Available: 360, 480, 540, 540t, 720, 720t, 1080, copy,
+                                  g360, g480, g540, g540t, g720, g720t, g1080
+    -s, --start         Start index for processing (default: 0)
+    -h, --help          Show this help message
+
+Environment Variables:
+    BASEDIR            Base directory for all operations (default: /content/drive/MyDrive)
+
+EOF
+}
+
+# Profile definitions
+get_profile_params() {
+    local profile="$1"
+    
+    case "$profile" in
+        "360")
+            echo "-vf scale=-2:360 -preset veryfast -crf 27 -movflags faststart -map_metadata -1 -strict -2 -c:s mov_text -disposition:s:0 forced -c:v libx265 -video_track_timescale 15360 -c:a libopus -ac 1 -ar 48000 -b:a 48k -b:v 360k -maxrate 360k -bufsize 180k"
+            ;;
+        "480")
+            echo "-vf scale=-2:480 -preset veryfast -crf 27 -movflags faststart -map_metadata -1 -strict -2 -c:s mov_text -disposition:s:0 forced -c:v libx265 -video_track_timescale 15360 -c:a libopus -ac 1 -ar 48000 -b:a 48k -b:v 480k -maxrate 480k -bufsize 240k"
+            ;;
+        "540")
+            echo "-vf scale=-2:540 -preset veryfast -crf 27 -movflags faststart -map_metadata -1 -strict -2 -c:s mov_text -disposition:s:0 forced -c:v libx265 -video_track_timescale 15360 -c:a libopus -ac 1 -ar 48000 -b:a 48k -b:v 540k -maxrate 540k -bufsize 270k"
+            ;;
+        "540t")
+            echo "-vf scale=-2:540 -preset veryfast -crf 27 -movflags faststart -map_metadata -1 -strict -2 -c:s mov_text -disposition:s:0 forced -c:v libx264 -c:a aac -b:a 128k -b:v 540k -maxrate 540k -bufsize 270k"
+            ;;
+        "720")
+            echo "-vf scale=-2:720 -preset veryfast -crf 27 -movflags faststart -map_metadata -1 -strict -2 -c:s mov_text -disposition:s:0 forced -c:v libx265 -video_track_timescale 15360 -c:a libopus -ac 1 -ar 48000 -b:a 48k -b:v 720k -maxrate 720k -bufsize 360k"
+            ;;
+        "720t")
+            echo "-vf scale=-2:720 -preset veryfast -crf 27 -movflags faststart -map_metadata -1 -strict -2 -c:s mov_text -disposition:s:0 forced -c:v libx264 -c:a aac -b:a 128k -b:v 720k -maxrate 720k -bufsize 360k"
+            ;;
+        "1080")
+            echo "-vf scale=-2:1080 -preset veryfast -crf 27 -movflags faststart -map_metadata -1 -strict -2 -c:s mov_text -disposition:s:0 forced -c:v libx265 -video_track_timescale 15360 -c:a libopus -ac 1 -ar 48000 -b:a 48k -b:v 1080k -maxrate 1080k -bufsize 540k"
+            ;;
+        "copy")
+            echo "-map_metadata -1 -strict -2 -c:s copy -disposition:s:0 forced -c:v copy -c:a copy"
+            ;;
+        "g360")
+            echo "-hwaccel nvdec -hwaccel_output_format cuda -extra_hw_frames 8 -err_detect ignore_err -analyzeduration 2147483647 -probesize 2147483647 -vf scale_cuda=-2:360 -map_metadata -1 -strict -2 -gpu 0 -movflags faststart -c:v hevc_nvenc -preset p7 -b_ref_mode:v 1 -c:a libopus -ac 1 -ar 48000 -b:a 32k -c:s mov_text -disposition:s:0 forced -tune hq -cq:v 36 -rc:v vbr -temporal-aq 1 -spatial-aq 1 -b:v 360k -maxrate 360k -bufsize 180k"
+            ;;
+        "g480")
+            echo "-hwaccel nvdec -hwaccel_output_format cuda -extra_hw_frames 8 -err_detect ignore_err -analyzeduration 2147483647 -probesize 2147483647 -vf scale_cuda=-2:480 -map_metadata -1 -strict -2 -gpu 0 -movflags faststart -c:v hevc_nvenc -preset p7 -b_ref_mode:v 1 -c:a libopus -ac 1 -ar 48000 -b:a 32k -c:s mov_text -disposition:s:0 forced -tune hq -cq:v 36 -rc:v vbr -temporal-aq 1 -spatial-aq 1 -b:v 480k -maxrate 480k -bufsize 240k"
+            ;;
+        "g540")
+            echo "-hwaccel nvdec -hwaccel_output_format cuda -extra_hw_frames 8 -err_detect ignore_err -analyzeduration 2147483647 -probesize 2147483647 -vf scale_cuda=-2:540 -map_metadata -1 -strict -2 -gpu 0 -movflags faststart -c:v hevc_nvenc -preset p7 -b_ref_mode:v 1 -c:a libopus -ac 1 -ar 48000 -b:a 32k -c:s mov_text -disposition:s:0 forced -tune hq -cq:v 36 -rc:v vbr -temporal-aq 1 -spatial-aq 1 -b:v 540k -maxrate 540k -bufsize 270k"
+            ;;
+        "g540t")
+            echo "-hwaccel nvdec -hwaccel_output_format cuda -extra_hw_frames 8 -err_detect ignore_err -analyzeduration 2147483647 -probesize 2147483647 -vf scale_cuda=-2:540 -c:v h264_nvenc -c:a aac -b:a 128k -b:v 540k -maxrate 540k -bufsize 270k"
+            ;;
+        "g720")
+            echo "-hwaccel nvdec -hwaccel_output_format cuda -extra_hw_frames 8 -err_detect ignore_err -analyzeduration 2147483647 -probesize 2147483647 -vf scale_cuda=-2:720 -map_metadata -1 -strict -2 -gpu 0 -movflags faststart -c:v hevc_nvenc -preset p7 -b_ref_mode:v 1 -c:a libopus -ac 1 -ar 48000 -b:a 32k -c:s mov_text -disposition:s:0 forced -tune hq -cq:v 36 -rc:v vbr -temporal-aq 1 -spatial-aq 1 -b:v 720k -maxrate 720k -bufsize 360k"
+            ;;
+        "g720t")
+            echo "-hwaccel nvdec -hwaccel_output_format cuda -extra_hw_frames 8 -err_detect ignore_err -analyzeduration 2147483647 -probesize 2147483647 -vf scale_cuda=-2:720 -c:v h264_nvenc -c:a aac -b:a 128k -b:v 720k -maxrate 720k -bufsize 360k"
+            ;;
+        "g1080")
+            echo "-hwaccel nvdec -hwaccel_output_format cuda -extra_hw_frames 8 -err_detect ignore_err -analyzeduration 2147483647 -probesize 2147483647 -vf scale_cuda=-2:1080 -map_metadata -1 -strict -2 -gpu 0 -movflags faststart -c:v hevc_nvenc -preset p7 -b_ref_mode:v 1 -c:a libopus -ac 1 -ar 48000 -b:a 32k -c:s mov_text -disposition:s:0 forced -tune hq -cq:v 36 -rc:v vbr -temporal-aq 1 -spatial-aq 1 -b:v 1080k -maxrate 1080k -bufsize 540k"
+            ;;
+        *)
+            echo "Error: Unknown profile '$profile'"
+            exit 1
+            ;;
+    esac
+}
+
+# Utility functions
+setup_directories() {
+    mkdir -p "$IDIR" "$ODIR" "$EDIR" "$DDIR"
+}
+
+sanitize_path() {
+    local path="$1"
+    local dir=$(dirname "$path")
+    local file=$(basename "$path")
+    
+    # Remove invalid characters, keep only alphanumeric, dash, underscore, dot, parentheses and space
+    local clean_file=$(echo "$file" | tr -cd '[:alnum:]._() -')
+    
+    mkdir -p "$dir"
+    echo "$dir/$clean_file"
+}
+
+is_video_file() {
+    local file="$1"
+    local ext="${file##*.}"
+    
+    for format in "${VIDEO_FORMATS[@]}"; do
+        if [[ ".${ext}" == "$format" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+is_subtitle_file() {
+    local file="$1"
+    local ext="${file##*.}"
+    
+    for format in "${SUBTITLE_FORMATS[@]}"; do
+        if [[ ".${ext}" == "$format" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+get_dir_size() {
+    local dir="$1"
+    du -sb "$dir" 2>/dev/null | cut -f1
+}
+
+get_largest_file_size() {
+    local dir="$1"
+    find "$dir" -type f -exec stat -c %s {} + 2>/dev/null | sort -nr | head -1
+}
+
+list_directories() {
+    local input_path="$1"
+    
+    case "$LIST_DIR" in
+        "sizedir")
+            find "$input_path" -mindepth 1 -maxdepth 1 -type d | while read -r dir; do
+                echo "$(get_dir_size "$dir") $dir"
+            done | sort -nr | cut -d' ' -f2-
+            ;;
+        "modified")
+            find "$input_path" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' | sort -nr | cut -d' ' -f2-
+            ;;
+        "filesize")
+            find "$input_path" -mindepth 1 -maxdepth 1 -type d | while read -r dir; do
+                echo "$(get_largest_file_size "$dir") $dir"
+            done | sort -nr | cut -d' ' -f2-
+            ;;
+        *)
+            find "$input_path" -mindepth 1 -maxdepth 1 -type d
+            ;;
+    esac
+}
+
+list_files() {
+    local dir="$1"
+    find "$dir" -type f | sort -V
+}
+
+handle_move() {
+    local input_file="$1"
+    local output_file="$2"
+    
+    if [[ "$DELETE_MODE" == "soft" ]]; then
+        cp -p "$input_file" "$output_file"
+        local trash_path="${input_file/$INPUT_PATH/$DDIR}"
+        local trash_dir=$(dirname "$trash_path")
+        mkdir -p "$trash_dir"
+        mv "$input_file" "$trash_path"
+    else
+        mv "$input_file" "$output_file"
+    fi
+}
+
+handle_delete() {
+    local path="$1"
+    local is_dir="${2:-false}"
+    
+    if [[ "$DELETE_MODE" == "hard" ]]; then
+        local dir=$(dirname "$path")
+        local name=$(basename "$path")
+        local del_name="DEL_$name"
+        local del_path="$dir/$del_name"
+        
+        mv "$path" "$del_path"
+        
+        if [[ "$is_dir" == "true" ]]; then
+            rm -rf "$del_path"
+        else
+            > "$del_path"
+            rm "$del_path"
+        fi
+    elif [[ "$DELETE_MODE" == "soft" ]] && [[ "$is_dir" == "false" ]]; then
+        local trash_path="${path/$INPUT_PATH/$DDIR}"
+        local trash_dir=$(dirname "$trash_path")
+        mkdir -p "$trash_dir"
+        mv "$path" "$trash_path"
+    fi
+}
+
+process_error_file() {
+    local input_file="$1"
+    local error_path="${input_file/$INPUT_PATH/$EDIR}"
+    local error_dir=$(dirname "$error_path")
+    
+    mkdir -p "$error_dir"
+    error_path=$(sanitize_path "$error_path")
+    mv "$input_file" "$error_path"
+}
+
+validate_video_file() {
+    local file="$1"
+    
+    if ! ffprobe -v error -show_entries format=bit_rate -of default=noprint_wrappers=1:nokey=1 "$file" >/dev/null 2>&1; then
+        echo "Error: Invalid video file: $file"
+        process_error_file "$file"
+        return 1
+    fi
+    return 0
+}
+
+find_subtitle_file() {
+    local video_file="$1"
+    local base_name=$(basename "$video_file" | sed 's/\.[^.]*$//')
+    local video_dir=$(dirname "$video_file")
+    
+    # Look for subtitle files with matching base name
+    local subtitle_files=()
+    while IFS= read -r -d '' file; do
+        subtitle_files+=("$file")
+    done < <(find "$video_dir" -maxdepth 1 -name "${base_name}*" -type f \( -name "*.srt" -o -name "*.vtt" -o -name "*.SRT" -o -name "*.VTT" \) -print0)
+    
+    if [[ ${#subtitle_files[@]} -eq 0 ]]; then
+        return 1
+    fi
+    
+    # Prefer English subtitles
+    for sub_file in "${subtitle_files[@]}"; do
+        if [[ "$sub_file" =~ [Ee][Nn] ]]; then
+            echo "$sub_file"
+            return 0
+        fi
+    done
+    
+    # Return first available subtitle
+    echo "${subtitle_files[0]}"
+    return 0
+}
+
+print_no_stream_warning() {
+    local stream_type="$1"
+    
+    case "$stream_type" in
+        "video")
+            cat << 'EOF'
+###  ##   ## ##            ### ###    ####   ### ##   ### ###   ## ##   
+  ## ##  ##   ##            ##  ##     ##     ##  ##   ##  ##  ##   ##  
+ # ## #  ##   ##            ##  ##     ##     ##  ##   ##      ##   ##  
+ ## ##   ##   ##            ##  ##     ##     ##  ##   ## ##   ##   ##  
+ ##  ##  ##   ##            ### ##     ##     ##  ##   ##      ##   ##  
+ ##  ##  ##   ##             ###       ##     ##  ##   ##  ##  ##   ##  
+###  ##   ## ##               ##      ####   ### ##   ### ###   ## ##
+EOF
+            ;;
+        "audio")
+            cat << 'EOF'
+###  ##   ## ##              ##     ##  ###  ### ##     ####    ## ##   
+  ## ##  ##   ##              ##    ##   ##   ##  ##     ##    ##   ##  
+ # ## #  ##   ##            ## ##   ##   ##   ##  ##     ##    ##   ##  
+ ## ##   ##   ##            ##  ##  ##   ##   ##  ##     ##    ##   ##  
+ ##  ##  ##   ##            ## ###  ##   ##   ##  ##     ##    ##   ##  
+ ##  ##  ##   ##            ##  ##  ##   ##   ##  ##     ##    ##   ##  
+###  ##   ## ##            ###  ##   ## ##   ### ##     ####    ## ##
+EOF
+            ;;
+        "subtitle")
+            cat << 'EOF'
+###  ##   ## ##             ## ##   ##  ###  ### ##   #### ##    ####   #### ##  ####     ### ###  
+  ## ##  ##   ##           ##   ##  ##   ##   ##  ##  # ## ##     ##    # ## ##   ##       ##  ##  
+ # ## #  ##   ##           ####     ##   ##   ##  ##    ##        ##      ##      ##       ##      
+ ## ##   ##   ##            #####   ##   ##   ## ##     ##        ##      ##      ##       ## ##   
+ ##  ##  ##   ##               ###  ##   ##   ##  ##    ##        ##      ##      ##       ##      
+ ##  ##  ##   ##           ##   ##  ##   ##   ##  ##    ##        ##      ##      ##  ##   ##  ##  
+###  ##   ## ##             ## ##    ## ##   ### ##    ####      ####    ####    ### ###  ### ###
+EOF
+            ;;
+    esac
+}
+
+process_encode() {
+    local input_file="$1"
+    local output_file="$2"
+    local profile_params=$(get_profile_params "$PROFILE")
+    
+    echo "Starting encoding: $input_file -> $output_file"
+    local encode_start=$(date +%s)
+    
+    # Find subtitle file
+    local subtitle_file=""
+    if subtitle_file=$(find_subtitle_file "$input_file"); then
+        echo "Found subtitle file: $subtitle_file"
+        profile_params="$profile_params -i \"$subtitle_file\""
+    fi
+    
+    # Build ffmpeg command
+    local ffmpeg_cmd="ffmpeg -i \"$input_file\""
+    
+    if [[ -n "$subtitle_file" ]]; then
+        ffmpeg_cmd="$ffmpeg_cmd -i \"$subtitle_file\""
+    fi
+    
+    ffmpeg_cmd="$ffmpeg_cmd $profile_params -y \"$output_file\""
+    
+    echo "FFmpeg command: $ffmpeg_cmd"
+    
+    # Execute ffmpeg
+    if eval "$ffmpeg_cmd" 2>/tmp/ffmpeg_error.log; then
+        local encode_end=$(date +%s)
+        local encode_time=$((encode_end - encode_start))
+        
+        if [[ -f "$output_file" ]]; then
+            local input_size=$(stat -c%s "$input_file")
+            local output_size=$(stat -c%s "$output_file")
+            local size_diff=$((input_size - output_size))
+            local compression_ratio=$(echo "scale=2; $output_size * 100 / $input_size" | bc -l)
+            
+            echo "Encoding completed in ${encode_time}s"
+            echo "Size: $input_size -> $output_size (diff: $size_diff, ratio: ${compression_ratio}%)"
+            return 0
+        else
+            echo "Error: Output file was not created"
+            return 1
+        fi
+    else
+        echo "Error: FFmpeg encoding failed"
+        cat /tmp/ffmpeg_error.log
+        return 1
+    fi
+}
+
+encode_files() {
+    local file_list=("$@")
+    local total_files=${#file_list[@]}
+    
+    echo "Processing $total_files files..."
+    
+    for ((i=0; i<total_files; i++)); do
+        local file="${file_list[$i]}"
+        
+        echo "Processing file $((i+1)) of $total_files: $file"
+        
+        if [[ -d "$file" ]]; then
+            continue
+        fi
+        
+        if [[ $i -lt $START_INDEX ]]; then
+            echo "Skipping file (index < start index)"
+            > "$file"
+            handle_delete "$file"
+            continue
+        fi
+        
+        if is_video_file "$file"; then
+            if ! validate_video_file "$file"; then
+                continue
+            fi
+            
+            local base_name="${file%.*}"
+            local output_file="${base_name/$INPUT_PATH/$ODIR}.mp4"
+            output_file=$(sanitize_path "$output_file")
+            
+            if process_encode "$file" "$output_file"; then
+                > "$file"
+                handle_delete "$file"
+                echo "Successfully processed: $output_file"
+            else
+                echo "Failed to encode: $file"
+                process_error_file "$file"
+            fi
+            
+        elif is_subtitle_file "$file"; then
+            continue  # Handle subtitles after video processing
+        else
+            # Copy non-video files
+            local output_file="${file/$INPUT_PATH/$ODIR}"
+            output_file=$(sanitize_path "$output_file")
+            echo "Copying non-video file: $output_file"
+            handle_move "$file" "$output_file"
+        fi
+    done
+    
+    # Clean up subtitle files
+    for ((i=0; i<total_files; i++)); do
+        local file="${file_list[$i]}"
+        if is_subtitle_file "$file" && [[ -f "$file" ]]; then
+            handle_delete "$file"
+        fi
+    done
+}
+
+encode_directory() {
+    local work_dir="$1"
+    local cycle=0
+    
+    echo "Processing directory: $work_dir"
+    
+    # Update timestamp
+    touch "$work_dir"
+    
+    while true; do
+        local files=()
+        while IFS= read -r -d '' file; do
+            files+=("$file")
+        done < <(find "$work_dir" -type f -print0)
+        
+        local file_count=${#files[@]}
+        
+        if [[ $file_count -eq 0 ]]; then
+            break
+        fi
+        
+        echo "Found $file_count files in directory (cycle $cycle)"
+        
+        if [[ $cycle -ge 5 ]]; then
+            echo "Maximum cycles reached, moving remaining files to error directory"
+            for file in "${files[@]}"; do
+                process_error_file "$file"
+            done
+            break
+        fi
+        
+        encode_files "${files[@]}"
+        ((cycle++))
+    done
+    
+    handle_delete "$work_dir" true
+    echo "Finished processing directory: $work_dir"
+}
+
+is_excluded() {
+    local dir="$1"
+    
+    for excluded in "${EXCLUDED_DIRS[@]}"; do
+        if [[ "$dir" == "$excluded" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+main_process() {
+    echo "Starting video encoding process..."
+    echo "Input: $INPUT_PATH"
+    echo "Output: $ODIR" 
+    echo "Profile: $PROFILE"
+    echo "Start index: $START_INDEX"
+    
+    setup_directories
+    
+    while true; do
+        local dirs=()
+        while IFS= read -r dir; do
+            if [[ -n "$dir" ]] && ! is_excluded "$dir"; then
+                dirs+=("$dir")
+            fi
+        done < <(list_directories "$INPUT_PATH")
+        
+        if [[ ${#dirs[@]} -eq 0 ]]; then
+            echo "FINISHED! No more directories to process."
+            break
+        fi
+        
+        local work_dir="${dirs[0]}"
+        echo "Selected directory: $work_dir"
+        
+        encode_directory "$work_dir"
+        
+        # Check if directory was processed successfully
+        if [[ " ${PROCESSED_DIRS[*]} " == *" $work_dir "* ]]; then
+            EXCLUDED_DIRS+=("$work_dir")
+            echo "Directory $work_dir excluded due to errors"
+        else
+            PROCESSED_DIRS+=("$work_dir")
+        fi
+    done
+    
+    local end_time=$(date +%s)
+    local total_time=$((end_time - START_TIME))
+    echo "Total processing time: ${total_time}s"
+}
+
+# Main execution
+main() {
+    # Check dependencies
+    if ! command -v ffmpeg >/dev/null 2>&1; then
+        echo "Error: ffmpeg is not installed or not in PATH"
+        exit 1
+    fi
+    
+    if ! command -v ffprobe >/dev/null 2>&1; then
+        echo "Error: ffprobe is not installed or not in PATH"
+        exit 1
+    fi
+    
+    # Parse arguments
+    parse_args "$@"
+    
+    # Validate input directory
+    if [[ ! -d "$INPUT_PATH" ]]; then
+        echo "Error: Input directory does not exist: $INPUT_PATH"
+        exit 1
+    fi
+    
+    # Start processing
+    main_process
+}
+
+# Run main function with all arguments
+main "$@"
