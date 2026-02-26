@@ -93,6 +93,9 @@ get_profile_params() {
         "360")
             echo "-vf scale=-2:360 -preset veryfast -crf 27 -movflags faststart -map_metadata -1 -strict -2 -c:s mov_text -disposition:s:0 forced -c:v libx265 -video_track_timescale 15360 -c:a libopus -ac 1 -ar 48000 -b:a 48k -b:v 360k -maxrate 360k -bufsize 180k"
             ;;
+        "360t")
+            echo "-vf scale=-2:360 -preset veryfast -crf 27 -movflags faststart -map_metadata -1 -strict -2 -c:s mov_text -disposition:s:0 forced -c:v libx264 -video_track_timescale 15360 -c:a aac -b:a 128k -b:v 360k -maxrate 360k -bufsize 180k"
+            ;;
         "480")
             echo "-vf scale=-2:480 -preset veryfast -crf 27 -movflags faststart -map_metadata -1 -strict -2 -c:s mov_text -disposition:s:0 forced -c:v libx265 -video_track_timescale 15360 -c:a libopus -ac 1 -ar 48000 -b:a 48k -b:v 480k -maxrate 480k -bufsize 240k"
             ;;
